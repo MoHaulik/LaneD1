@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR AR Runner Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 1;
+    }
+    #start-button {
+      padding: 12px 24px;
+      font-size: 18px;
+      background: rgba(72, 118, 255, 0.8);
+      color: white;
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    #start-button:hover {
+      background: rgba(72, 118, 255, 1);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+    }
+    #status {
+      margin-top: 15px;
+      font-size: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    #score {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      color: white;
+      font-size: 24px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px 15px;
+      border-radius: 12px;
+      backdrop-filter: blur(5px);
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Start AR Experience</button>
+    <div id="status"></div>
+  </div>
+  <div id="score">Score: 0</div>
+  
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+    import { ARButton } from 'https://unpkg.com/three@0.150.1/examples/jsm/webxr/ARButton.js';
+
+    let camera, scene, renderer, controller;
+    let playerMesh, currentLaneIndex = 1;
+    let score = 0, objects = [];
+    const lanes = [-0.5, 0, 0.5];
+    let canChangeLane = true;
+    const laneChangeThreshold = 0.3;
+    
+    init();
+
+    function init() {
+      // Scene setup
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      // Renderer setup
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // Lighting
+      const ambientLight = new THREE.AmbientLight(0x404040, 2);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      directionalLight.position.set(1, 1, 1);
+      directionalLight.castShadow = true;
+      scene.add(directionalLight);
+
+      // Player setup
+      const playerGeometry = new THREE.SphereGeometry(0.1);
+      const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+      playerMesh = new THREE.Mesh(playerGeometry, playerMaterial);
+      playerMesh.position.set(0, 0, 0);
+      scene.add(playerMesh);
+
+      // Start button event
+      document.getElementById('start-button').addEventListener('click', () => {
+        if (navigator.xr) {
+          navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+            if (supported) {
+              const sessionInit = { 
+                requiredFeatures: ['hit-test'],
+                optionalFeatures: ['dom-overlay'], 
+                domOverlay: { root: document.body } 
+              };
+              navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+            } else {
+              updateStatus('WebXR AR session is not supported on this device.');
+            }
+          });
+        } else {
+          updateStatus('WebXR is not supported in this browser.');
+        }
+      });
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function updateStatus(message) {
+      const statusElement = document.getElementById('status');
+      statusElement.style.display = 'block';
+      statusElement.textContent = message;
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onSessionStarted(session) {
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      document.getElementById('start-button').style.display = 'none';
+      updateStatus('Game started! Move controller left/right to change lanes');
+
+      setupController(session);
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+    }
+
+    function onSessionEnd() {
+      updateStatus('Game ended');
+      document.getElementById('start-button').style.display = 'block';
+      score = 0;
+      objects.forEach(obj => scene.remove(obj));
+      objects = [];
+      document.getElementById('score').textContent = `Score: 0`;
+    }
+
+    function setupController(session) {
+      controller = renderer.xr.getController(0);
+      controller.addEventListener('connected', (event) => {
+        updateStatus(`Controller connected: ${event.data.handedness}`);
+      });
+      scene.add(controller);
+    }
+
+    function spawnObject() {
+      const type = Math.random() < 0.3 ? 'obstacle' : 'point';
+      const lane = lanes[Math.floor(Math.random() * 3)];
+      let object;
+
+      if (type === 'obstacle') {
+        object = new THREE.Mesh(
+          new THREE.BoxGeometry(0.2, 0.2, 0.2),
+          new THREE.MeshStandardMaterial({ color: 0xff0000 })
+        );
+        object.isObstacle = true;
+      } else {
+        object = new THREE.Mesh(
+          new THREE.SphereGeometry(0.1),
+          new THREE.MeshStandardMaterial({ color: 0xffff00 })
+        );
+        object.isObstacle = false;
+      }
+
+      object.position.set(lane, 0, 10);
+      scene.add(object);
+      objects.push(object);
+    }
+
+    function updatePlayerPosition() {
+      const targetX = lanes[currentLaneIndex];
+      playerMesh.position.x += (targetX - playerMesh.position.x) * 0.1;
+    }
+
+    function handleCollisions() {
+      const playerPos = playerMesh.position;
+      
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const obj = objects[i];
+        obj.position.z -= 0.1;
+
+        if (obj.position.z < -5) {
+          scene.remove(obj);
+          objects.splice(i, 1);
+          continue;
+        }
+
+        const distance = playerPos.distanceTo(obj.position);
+        if (distance < 0.2) {
+          score += obj.isObstacle ? -10 : 10;
+          document.getElementById('score').textContent = `Score: ${score}`;
+          scene.remove(obj);
+          objects.splice(i, 1);
+        }
+      }
+    }
+
+    function render(timestamp, frame) {
+      if (!frame) return;
+
+      // Handle lane changes
+      if (controller) {
+        const controllerPos = new THREE.Vector3();
+        const cameraPos = new THREE.Vector3();
+        controller.getWorldPosition(controllerPos);
+        camera.getWorldPosition(cameraPos);
+        
+        const deltaX = controllerPos.x - cameraPos.x;
+        const absDeltaX = Math.abs(deltaX);
+
+        if (absDeltaX > laneChangeThreshold && canChangeLane) {
+          if (deltaX < 0 && currentLaneIndex > 0) {
+            currentLaneIndex--;
+          } else if (deltaX > 0 && currentLaneIndex < 2) {
+            currentLaneIndex++;
+          }
+          canChangeLane = false;
+        } else if (absDeltaX < laneChangeThreshold / 2) {
+          canChangeLane = true;
+        }
+      }
+
+      // Spawn objects periodically
+      if (Math.random() < 0.02) spawnObject();
+
+      updatePlayerPosition();
+      handleCollisions();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
